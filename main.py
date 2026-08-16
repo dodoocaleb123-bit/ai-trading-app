@@ -166,15 +166,15 @@ async def autonomous_market_scan():
                     
                     # Push instant alert if AI approves setup against RAG strategy rules
                     if audit_result.get("verdict") in ["APPROVED", "WARNING"]:
+                        # Custom cleanly formatted message payload
                         alert_text = (
-                            f"🚨 **AUTONOMOUS AI TRADE ALERT** 🚨\n\n"
-                            f"**Asset:** {symbol} ({tf.upper()})\n"
-                            f"**Direction:** {direction}\n"
-                            f"**Live Entry:** {latest_close}\n"
-                            f"**Verdict:** {audit_result.get('verdict')} ({audit_result.get('confidence_score', 0)}% Confidence)\n"
-                            f"**Risk/Reward Ratio:** {audit_result.get('risk_reward_ratio', 0.0)}\n\n"
-                            f"**Summary:** {audit_result.get('summary', '')}\n\n"
-                            f"**Suggested Improvements:** {', '.join(audit_result.get('improvements', []))}"
+                            f"🚨 *TRADING SIGNAL ALERT* 🚨\n\n"
+                            f"• *Asset:* {symbol}\n"
+                            f"• *Direction:* {direction}\n"
+                            f"• *Entry:* {latest_close}\n"
+                            f"• *Stop Loss:* {est_sl}\n"
+                            f"• *Take Profit:* {est_tp}\n"
+                            f"• *Risk/Reward:* 1:2"
                         )
                         await send_telegram_alert(alert_text)
                         
