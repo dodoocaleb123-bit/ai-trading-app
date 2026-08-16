@@ -1,0 +1,10 @@
+{
+  "version": 3,
+  "artifactType": {
+    "type": "COMPATIBLE_SCREEN_MANIFEST",
+    "kind": "Directory"
+  },
+  "applicationId": "app.vercel.ai_trading_app_git_main_tech_angel1.twa",
+  "variantName": "release",
+  "elements": []
+}
