@@ -161,7 +161,7 @@ async def check_tracked_trades_outcomes():
                     outcome = "LOSS"
 
             if outcome:
-                # 1. Update status in tracked_signals table[cite: 1]
+                # 1. Update status in tracked_signals table
                 supabase.table("tracked_signals").update({"status": outcome}).eq("id", trade_id).execute()
                 
                 new_rule_created = False
@@ -203,7 +203,7 @@ Return ONLY the text of the new strategy rule (1 sentence max)."""
                     except Exception as learn_err:
                         print(f"Failed to record trade loss into AI strategy rules: {learn_err}")
 
-                # 3. Send Telegram result notification with learning status indicator[cite: 1]
+                # 3. Send Telegram result notification with learning status indicator
                 emoji = "✅ *WIN*" if outcome == "WIN" else "❌ *LOSS (AI Self-Updated)*"
                 result_alert = (
                     f"🎯 *TRADE RESULT & AI LEARNING REPORT* 🎯\n\n"
@@ -251,8 +251,6 @@ async def autonomous_market_scan():
                 c0 = float(candles[0]["close"])
                 c1 = float(candles[1]["close"])
                 c2 = float(candles[2]["close"])
-                high = float(candles[0]["high"])
-                low = float(candles[0]["low"])
                 
                 is_bullish = c0 > c1 and c1 > c2
                 is_bearish = c0 < c1 and c1 < c2
@@ -265,15 +263,15 @@ async def autonomous_market_scan():
                 # Mark this candle as processed
                 last_alerted_candles[cache_key] = latest_candle_time
                 
-                # Tightened stop-loss buffers to prevent excessively wide risk ranges
+                # Tight percentage-based stop loss offsets for clean scalps
                 if "BTC" in symbol:
-                    sl_buffer = c0 * 0.003  
+                    sl_offset = c0 * 0.0012  # ~0.12% risk range
                 elif "XAU" in symbol:
-                    sl_buffer = c0 * 0.0015 
+                    sl_offset = c0 * 0.0006  # ~0.06% risk range
                 else:
-                    sl_buffer = c0 * 0.0008 
-                
-                est_sl = round(low - sl_buffer, 4) if direction == "BUY" else round(high + sl_buffer, 4)
+                    sl_offset = c0 * 0.0003  # ~0.03% risk range
+
+                est_sl = round(c0 - sl_offset, 4) if direction == "BUY" else round(c0 + sl_offset, 4)
                 risk_distance = abs(c0 - est_sl)
                 est_tp = round(c0 + (risk_distance * 2), 4) if direction == "BUY" else round(c0 - (risk_distance * 2), 4)
                 
