@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Trading Guard AI</string>
+    <string name="title_activity_main">Trading Guard AI</string>
+    <string name="package_name">com.tradingguard.ai</string>
+    <string name="custom_url_scheme">com.tradingguard.ai</string>
+</resources>
