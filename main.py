@@ -181,7 +181,8 @@ app = FastAPI(
 
 origins = [
     "http://localhost:5173",
-    "https://ai-trading-app.vercel.app",  # Replace with your exact Vercel URL if different
+    "https://ai-trading-app-lyart.vercel.app",
+    "https://ai-trading-app.vercel.app",
 ]
 
 app.add_middleware(
