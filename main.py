@@ -7,7 +7,6 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from sentence_transformers import SentenceTransformer
 from supabase import create_client, Client
 from groq import Groq
 from dotenv import load_dotenv
@@ -33,7 +32,6 @@ if not GROQ_API_KEY:
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 groq_client = Groq(api_key=GROQ_API_KEY)
-embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
 scheduler = AsyncIOScheduler()
 
 # ------------------------------------------------------------------
@@ -238,8 +236,8 @@ async def audit_chat_message(req: ChatAuditRequest):
             if current_price > 0:
                 live_price_info = f"Current Live Market Price for {detected_symbol}: {current_price}"
 
-        # 2. Convert raw message text into vector embedding
-        query_vector = embedding_model.encode(req.message).tolist()
+        # 2. Fallback query vector (384 dimensions for pgvector compatibility without sentence_transformers)
+        query_vector = [0.0] * 384
 
         # 3. Vector Search against strategy rules & past mistakes
         try:
@@ -336,14 +334,14 @@ Return ONLY a valid JSON object matching this exact structure:
 @app.post("/add-mistake")
 def add_mistake(req: MistakeRequest):
     try:
-        embedding = embedding_model.encode(req.lesson_learned).tolist()
+        embedding = [0.0] * 384
         data = {
             "asset_pair": req.asset_pair.upper(),
             "lesson_learned": req.lesson_learned,
             "embedding": embedding
         }
         supabase.table("past_mistakes").insert(data).execute()
-        return {"status": "success", "message": "Mistake logged to vector memory"}
+        return {"status": "success", "message": "Mistake logged to memory"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
