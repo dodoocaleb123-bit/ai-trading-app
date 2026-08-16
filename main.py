@@ -258,7 +258,10 @@ async def audit_chat_message(req: ChatAuditRequest):
     try:
         # Check active session status for traditional Forex market
         forex_open = is_forex_market_open()
-        market_status_note = "Forex Market is OPEN." if forex_open else "Forex Market is CLOSED (Weekend session)."
+        market_status_note = (
+            "Forex Market is OPEN." if forex_open 
+            else "Forex Market is CLOSED (Weekend session). Note: Crypto assets like BTC/USD trade 24/7 and are fully active."
+        )
 
         # 1. Fetch live market price if a ticker/symbol is detected
         live_price_info = "Live market price unavailable."
@@ -324,7 +327,7 @@ The trader just posted this raw trade signal:
 {mistakes_context}
 
 ### INSTRUCTIONS:
-1. If the detected asset is a Forex/Commodity pair (e.g. EURUSD, GBPUSD, XAUUSD) and the Forex Market is CLOSED, audit the trade setup theoretically for weekend planning. Explicitly state in 'violations' or 'summary' that the Forex market is closed and live execution is paused until market open. (Note: Crypto pairs like BTCUSD run 24/7).
+1. If the detected asset is a Forex/Commodity pair (e.g. EURUSD, GBPUSD, XAUUSD) and the Forex Market is CLOSED, audit the trade setup theoretically for weekend planning and note that live execution is paused. HOWEVER, if the asset is Crypto (e.g. BTC/USD or BTCUSD), crypto markets are OPEN 24/7, so do NOT flag a market closure violation for crypto.
 2. DO NOT reject or penalize a trade signal simply because the user provided a fast, brief entry without typing out full market context or strategy names in text.
 3. Automatically parse the trade parameters (Asset Pair, Direction, Entry Price, Stop Loss, Take Profit) from the signal.
 4. Compare the trader's proposed entry price against the CURRENT LIVE MARKET PRICE (if available) to detect slippage or invalid pending orders.
