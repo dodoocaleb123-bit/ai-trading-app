@@ -35,6 +35,9 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 groq_client = Groq(api_key=GROQ_API_KEY)
 scheduler = AsyncIOScheduler()
 
+# Cache to track the last alerted candle timestamp per symbol+timeframe and prevent duplicate spam
+last_alerted_candles = {}
+
 # ------------------------------------------------------------------
 # Section 2: Helper & Market Data Functions
 # ------------------------------------------------------------------
@@ -124,7 +127,7 @@ async def send_telegram_alert(message: str):
 # Section 3: Trade Outcome Tracking & Background Scanner
 # ------------------------------------------------------------------
 async def check_tracked_trades_outcomes():
-    """Background task checking active tracked signals against live prices, evaluating Win/Loss, and feeding losses back into AI memory."""
+    """Background task checking active tracked signals against live prices, evaluating Win/Loss, and updating AI strategy rules on losses."""
     try:
         response = supabase.table("tracked_signals").select("*").eq("status", "OPEN").execute()
         open_trades = response.data if response and response.data else []
@@ -158,10 +161,12 @@ async def check_tracked_trades_outcomes():
                     outcome = "LOSS"
 
             if outcome:
-                # 1. Update status in tracked_signals table
+                # 1. Update status in tracked_signals table[cite: 1]
                 supabase.table("tracked_signals").update({"status": outcome}).eq("id", trade_id).execute()
                 
-                # 2. Self-Learning Loop: If it's a LOSS, automatically record it into past_mistakes so the AI learns from it!
+                new_rule_created = False
+                
+                # 2. Self-Learning Loop: If it's a LOSS, record mistake and generate new strategy rule
                 if outcome == "LOSS":
                     try:
                         lesson_text = (
@@ -174,14 +179,34 @@ async def check_tracked_trades_outcomes():
                             "embedding": [0.0] * 384
                         }
                         supabase.table("past_mistakes").insert(mistake_payload).execute()
-                        print(f"🧠 Self-Learning Engine: Logged failed {symbol} trade into past mistakes memory.")
-                    except Exception as learn_err:
-                        print(f"Failed to record trade loss into AI memory: {learn_err}")
 
-                # 3. Send follow-up telegram result notification with learning status indicator
-                emoji = "✅ *WIN*" if outcome == "WIN" else "❌ *LOSS (Learned by AI)*"
+                        # Generate adaptive rule via Groq
+                        rule_prompt = f"""Based on this failed trade outcome, write a concise, actionable trading strategy rule or guardrail to prevent repeating this mistake:
+Asset: {symbol} | Timeframe: {tf} | Direction: {direction} | Entry: {entry} | Stop Loss Hit: {sl}
+
+Return ONLY the text of the new strategy rule (1 sentence max)."""
+
+                        rule_completion = groq_client.chat.completions.create(
+                            messages=[{"role": "user", "content": rule_prompt}],
+                            model="llama-3.1-8b-instant",
+                            temperature=0.3
+                        )
+                        new_rule_content = rule_completion.choices[0].message.content.strip()
+
+                        rule_payload = {
+                            "content": f"[Auto-Learned Rule from {symbol} Loss]: {new_rule_content}",
+                            "embedding": [0.0] * 384
+                        }
+                        supabase.table("strategy_rules").insert(rule_payload).execute()
+                        new_rule_created = True
+                        print(f"🧠 Autonomous AI Learning: Created new strategy rule from {symbol} loss.")
+                    except Exception as learn_err:
+                        print(f"Failed to record trade loss into AI strategy rules: {learn_err}")
+
+                # 3. Send Telegram result notification with learning status indicator[cite: 1]
+                emoji = "✅ *WIN*" if outcome == "WIN" else "❌ *LOSS (AI Self-Updated)*"
                 result_alert = (
-                    f"🎯 *TRADE RESULT & LEARNING UPDATE* 🎯\n\n"
+                    f"🎯 *TRADE RESULT & AI LEARNING REPORT* 🎯\n\n"
                     f"• *Status:* {emoji}\n"
                     f"• *Asset:* {symbol}\n"
                     f"• *Timeframe:* `{tf}`\n"
@@ -190,6 +215,9 @@ async def check_tracked_trades_outcomes():
                     f"• *Exit Price:* {current_price}\n"
                     f"• *Target Hit:* {'Take Profit' if outcome == 'WIN' else 'Stop Loss'}"
                 )
+                if new_rule_created:
+                    result_alert += f"\n\n💡 *AI Adaptation:* A new protective risk rule has been added to your database to filter out similar setups."
+
                 await send_telegram_alert(result_alert)
 
     except Exception as e:
@@ -197,6 +225,7 @@ async def check_tracked_trades_outcomes():
 
 async def autonomous_market_scan():
     """Background task evaluating market setups across a watchlist and multiple timeframes with asset-aware risk sizing and trend confirmation."""
+    global last_alerted_candles
     forex_open = is_forex_market_open()
     
     watchlist = ["XAU/USD", "EUR/USD", "GBP/USD", "BTC/USD"]
@@ -210,6 +239,13 @@ async def autonomous_market_scan():
             try:
                 candles = await fetch_recent_candles(symbol, interval=tf, outputsize=5)
                 if not candles or len(candles) < 3:
+                    continue
+                
+                latest_candle_time = candles[0]["datetime"]
+                cache_key = f"{symbol}_{tf}"
+                
+                # Prevent duplicate alerts for the exact same active candle period
+                if last_alerted_candles.get(cache_key) == latest_candle_time:
                     continue
                     
                 c0 = float(candles[0]["close"])
@@ -226,12 +262,16 @@ async def autonomous_market_scan():
                     
                 direction = "BUY" if is_bullish else "SELL"
                 
+                # Mark this candle as processed
+                last_alerted_candles[cache_key] = latest_candle_time
+                
+                # Tightened stop-loss buffers to prevent excessively wide risk ranges
                 if "BTC" in symbol:
-                    sl_buffer = c0 * 0.012  
-                elif "XAU" in symbol:
                     sl_buffer = c0 * 0.003  
-                else:
+                elif "XAU" in symbol:
                     sl_buffer = c0 * 0.0015 
+                else:
+                    sl_buffer = c0 * 0.0008 
                 
                 est_sl = round(low - sl_buffer, 4) if direction == "BUY" else round(high + sl_buffer, 4)
                 risk_distance = abs(c0 - est_sl)
@@ -280,7 +320,7 @@ async def autonomous_market_scan():
 # ------------------------------------------------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    scheduler.add_job(autonomous_market_scan, 'interval', minutes=15)
+    scheduler.add_job(autonomous_market_scan, 'interval', minutes=1) # Scans every 1 minute for near-instant alerts
     scheduler.add_job(check_tracked_trades_outcomes, 'interval', minutes=5)
     scheduler.start()
     print("🚀 Autonomous Multi-Timeframe Market Scanner & Outcome Tracker Started")
