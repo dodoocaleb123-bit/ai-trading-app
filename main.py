@@ -256,6 +256,10 @@ def root():
 @app.post("/chat-audit", response_model=AuditResponse)
 async def audit_chat_message(req: ChatAuditRequest):
     try:
+        # Check active session status for traditional Forex market
+        forex_open = is_forex_market_open()
+        market_status_note = "Forex Market is OPEN." if forex_open else "Forex Market is CLOSED (Weekend session)."
+
         # 1. Fetch live market price if a ticker/symbol is detected
         live_price_info = "Live market price unavailable."
         
@@ -301,11 +305,14 @@ async def audit_chat_message(req: ChatAuditRequest):
         rules_context = "\n---\n".join(relevant_rules) if relevant_rules else "No specific strategy rules matched."
         mistakes_context = "\n---\n".join(past_mistakes) if past_mistakes else "No similar past mistakes detected."
 
-        # 4. Build prompt incorporating live market feeds
+        # 4. Build prompt incorporating market session context and live feeds
         prompt = f"""You are an expert AI Trading Copilot and Risk Manager inside a live trading chat application.
 The trader just posted this raw trade signal:
 
 "{req.message}"
+
+### MARKET SESSION STATUS:
+{market_status_note}
 
 ### REAL-TIME MARKET DATA:
 {live_price_info}
@@ -317,14 +324,15 @@ The trader just posted this raw trade signal:
 {mistakes_context}
 
 ### INSTRUCTIONS:
-1. DO NOT reject or penalize a trade signal simply because the user provided a fast, brief entry without typing out full market context or strategy names in text.
-2. Automatically parse the trade parameters (Asset Pair, Direction, Entry Price, Stop Loss, Take Profit) from the signal.
-3. Compare the trader's proposed entry price against the CURRENT LIVE MARKET PRICE (if available) to detect slippage or invalid pending orders.
-4. Mathematically evaluate or calculate the Risk-to-Reward ratio based on the price levels provided.
-5. Compare the trade against the retrieved strategy rules and past mistakes:
+1. If the detected asset is a Forex/Commodity pair (e.g. EURUSD, GBPUSD, XAUUSD) and the Forex Market is CLOSED, audit the trade setup theoretically for weekend planning. Explicitly state in 'violations' or 'summary' that the Forex market is closed and live execution is paused until market open. (Note: Crypto pairs like BTCUSD run 24/7).
+2. DO NOT reject or penalize a trade signal simply because the user provided a fast, brief entry without typing out full market context or strategy names in text.
+3. Automatically parse the trade parameters (Asset Pair, Direction, Entry Price, Stop Loss, Take Profit) from the signal.
+4. Compare the trader's proposed entry price against the CURRENT LIVE MARKET PRICE (if available) to detect slippage or invalid pending orders.
+5. Mathematically evaluate or calculate the Risk-to-Reward ratio based on the price levels provided.
+6. Compare the trade against the retrieved strategy rules and past mistakes:
    - Verify if the setup meets minimum Risk-Reward thresholds (e.g., 1:2+).
    - Check if the trade mirrors any logged past mistakes or violates risk constraints.
-6. Provide proactive, actionable trade optimization advice in 'summary' and 'improvements' (e.g., specific SL/TP price adjustments to optimize risk-reward).
+7. Provide proactive, actionable trade optimization advice in 'summary' and 'improvements' (e.g., specific SL/TP price adjustments to optimize risk-reward).
 
 Return ONLY a valid JSON object matching this exact structure:
 {{
@@ -332,7 +340,7 @@ Return ONLY a valid JSON object matching this exact structure:
   "confidence_score": <number between 0 and 100>,
   "risk_reward_ratio": <calculated or estimated float, e.g. 2.0>,
   "summary": "<1-2 sentence executive audit summary with clear trade guidance>",
-  "violations": ["<violation or conflict with live price, strategy rules, or past mistakes>"],
+  "violations": ["<violation or conflict with live price, strategy rules, market hours, or past mistakes>"],
   "improvements": ["<concrete level adjustment or trade optimization suggestion>"]
 }}
 """
@@ -341,7 +349,7 @@ Return ONLY a valid JSON object matching this exact structure:
             messages=[
                 {
                     "role": "system", 
-                    "content": "You are a proactive AI Trading Copilot and Risk Manager. You evaluate raw trade inputs against live market prices, pre-loaded strategy rules, and past mistakes, providing constructive trade optimizations."
+                    "content": "You are a proactive AI Trading Copilot and Risk Manager. You evaluate raw trade inputs against live market prices, session hours, pre-loaded strategy rules, and past mistakes, providing constructive trade optimizations."
                 },
                 {"role": "user", "content": prompt}
             ],
