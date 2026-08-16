@@ -83,7 +83,7 @@ async def fetch_recent_candles(symbol: str, interval: str = "15min", outputsize:
             data = res.json()
             return data.get("values", [])
     except Exception as e:
-        print(f"Error fetching candles for {symbol}: {e}")
+        print(f"Error fetching candles for {symbol} ({interval}): {e}")
         return []
 
 async def send_telegram_alert(message: str):
@@ -105,56 +105,58 @@ async def send_telegram_alert(message: str):
         print(f"Failed to dispatch Telegram alert: {e}")
 
 # ------------------------------------------------------------------
-# Section 3: 24/7 Autonomous Background Market Scanner
+# Section 3: 24/7 Autonomous Multi-Timeframe Background Market Scanner
 # ------------------------------------------------------------------
 async def autonomous_market_scan():
-    """24/7 background task evaluating market setups across a watchlist every 15 minutes."""
+    """24/7 background task evaluating market setups across a watchlist and multiple timeframes."""
     watchlist = ["XAU/USD", "EUR/USD", "GBP/USD", "BTC/USD"]
+    timeframes = ["5min", "15min", "1h", "4h"]
     
     for symbol in watchlist:
-        try:
-            candles = await fetch_recent_candles(symbol, interval="15min", outputsize=5)
-            if not candles or len(candles) < 2:
-                continue
-                
-            latest_close = float(candles[0]["close"])
-            prev_close = float(candles[1]["close"])
-            high = float(candles[0]["high"])
-            low = float(candles[0]["low"])
-            
-            # Technical Trigger: Evaluate volatility / price expansion (>0.1% move)
-            price_change_pct = abs((latest_close - prev_close) / prev_close) * 100
-            
-            if price_change_pct >= 0.10:
-                direction = "BUY" if latest_close > prev_close else "SELL"
-                est_sl = round(low - (latest_close * 0.002), 4) if direction == "BUY" else round(high + (latest_close * 0.002), 4)
-                est_tp = round(latest_close + (abs(latest_close - est_sl) * 2), 4) if direction == "BUY" else round(latest_close - (abs(latest_close - est_sl) * 2), 4)
-                
-                scan_message = (
-                    f"AUTOMATED 24/7 SCAN: Potential {direction} setup on {symbol}. "
-                    f"Entry Price: {latest_close}, Stop Loss: {est_sl}, Take Profit: {est_tp}."
-                )
-                
-                # Hand off detected technical setup to AI Audit Engine
-                audit_req = ChatAuditRequest(message=scan_message)
-                audit_result = await audit_chat_message(audit_req)
-                
-                # Push instant alert if AI approves setup against RAG strategy rules
-                if audit_result.get("verdict") in ["APPROVED", "WARNING"]:
-                    alert_text = (
-                        f"🚨 **AUTONOMOUS AI TRADE ALERT** 🚨\n\n"
-                        f"**Asset:** {symbol}\n"
-                        f"**Direction:** {direction}\n"
-                        f"**Live Entry:** {latest_close}\n"
-                        f"**Verdict:** {audit_result.get('verdict')} ({audit_result.get('confidence_score', 0)}% Confidence)\n"
-                        f"**Risk/Reward Ratio:** {audit_result.get('risk_reward_ratio', 0.0)}\n\n"
-                        f"**Summary:** {audit_result.get('summary', '')}\n\n"
-                        f"**Suggested Improvements:** {', '.join(audit_result.get('improvements', []))}"
-                    )
-                    await send_telegram_alert(alert_text)
+        for tf in timeframes:
+            try:
+                candles = await fetch_recent_candles(symbol, interval=tf, outputsize=5)
+                if not candles or len(candles) < 2:
+                    continue
                     
-        except Exception as e:
-            print(f"Error during background scan for {symbol}: {e}")
+                latest_close = float(candles[0]["close"])
+                prev_close = float(candles[1]["close"])
+                high = float(candles[0]["high"])
+                low = float(candles[0]["low"])
+                
+                # Technical Trigger: Evaluate volatility / price expansion (>0.1% move)
+                price_change_pct = abs((latest_close - prev_close) / prev_close) * 100
+                
+                if price_change_pct >= 0.10:
+                    direction = "BUY" if latest_close > prev_close else "SELL"
+                    est_sl = round(low - (latest_close * 0.002), 4) if direction == "BUY" else round(high + (latest_close * 0.002), 4)
+                    est_tp = round(latest_close + (abs(latest_close - est_sl) * 2), 4) if direction == "BUY" else round(latest_close - (abs(latest_close - est_sl) * 2), 4)
+                    
+                    scan_message = (
+                        f"AUTOMATED 24/7 SCAN [{tf.upper()}]: Potential {direction} setup on {symbol}. "
+                        f"Entry Price: {latest_close}, Stop Loss: {est_sl}, Take Profit: {est_tp}."
+                    )
+                    
+                    # Hand off detected technical setup to AI Audit Engine
+                    audit_req = ChatAuditRequest(message=scan_message)
+                    audit_result = await audit_chat_message(audit_req)
+                    
+                    # Push instant alert if AI approves setup against RAG strategy rules
+                    if audit_result.get("verdict") in ["APPROVED", "WARNING"]:
+                        alert_text = (
+                            f"🚨 **AUTONOMOUS AI TRADE ALERT** 🚨\n\n"
+                            f"**Asset:** {symbol} ({tf.upper()})\n"
+                            f"**Direction:** {direction}\n"
+                            f"**Live Entry:** {latest_close}\n"
+                            f"**Verdict:** {audit_result.get('verdict')} ({audit_result.get('confidence_score', 0)}% Confidence)\n"
+                            f"**Risk/Reward Ratio:** {audit_result.get('risk_reward_ratio', 0.0)}\n\n"
+                            f"**Summary:** {audit_result.get('summary', '')}\n\n"
+                            f"**Suggested Improvements:** {', '.join(audit_result.get('improvements', []))}"
+                        )
+                        await send_telegram_alert(alert_text)
+                        
+            except Exception as e:
+                print(f"Error during background scan for {symbol} on {tf}: {e}")
 
 # ------------------------------------------------------------------
 # Section 4: FastAPI Initialization & Lifespan Event
@@ -164,14 +166,14 @@ async def lifespan(app: FastAPI):
     # Startup: Start background scanner loop (runs every 15 minutes)
     scheduler.add_job(autonomous_market_scan, 'interval', minutes=15)
     scheduler.start()
-    print("🚀 24/7 Autonomous Market Scanner Started")
+    print("🚀 24/7 Multi-Timeframe Market Scanner Started")
     yield
     # Shutdown: Stop scheduler gracefully
     scheduler.shutdown()
 
 app = FastAPI(
     title="AI Trading Strategy Audit API",
-    description="RAG-powered API to audit trades and run 24/7 autonomous market scans.",
+    description="RAG-powered API to audit trades and run 24/7 autonomous multi-timeframe market scans.",
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
