@@ -8,26 +8,28 @@ export default defineConfig({
     VitePWA({
       registerType: 'autoUpdate',
       injectRegister: 'auto',
-      includeAssets: ['favicon.ico', 'pwa-192x192.png', 'pwa-512x512.png'],
+      devOptions: {
+        enabled: true // Allows testing PWA in local development
+      },
       manifest: {
+        id: '/',
         name: 'Trading Guard AI',
         short_name: 'TradingGuard',
         description: 'AI-Powered Trading Sentinel & Risk Audit',
         theme_color: '#020617',
         background_color: '#020617',
         display: 'standalone',
-        orientation: 'portrait',
         start_url: '/',
         scope: '/',
         icons: [
           {
-            src: '/pwa-192x192.png',
+            src: 'pwa-192x192.png',
             sizes: '192x192',
             type: 'image/png',
             purpose: 'any'
           },
           {
-            src: '/pwa-512x512.png',
+            src: 'pwa-512x512.png',
             sizes: '512x512',
             type: 'image/png',
             purpose: 'maskable'
