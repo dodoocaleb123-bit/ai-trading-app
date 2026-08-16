@@ -124,9 +124,8 @@ async def send_telegram_alert(message: str):
 # Section 3: Trade Outcome Tracking & Background Scanner
 # ------------------------------------------------------------------
 async def check_tracked_trades_outcomes():
-    """Background task checking active tracked signals against live prices to evaluate Win/Loss status."""
+    """Background task checking active tracked signals against live prices, evaluating Win/Loss, and feeding losses back into AI memory."""
     try:
-        # Fetch open signals from Supabase
         response = supabase.table("tracked_signals").select("*").eq("status", "OPEN").execute()
         open_trades = response.data if response and response.data else []
         
@@ -142,7 +141,6 @@ async def check_tracked_trades_outcomes():
             tp = float(trade["take_profit"])
             tf = trade["timeframe"]
 
-            # Fetch current price
             current_price = await get_live_price_rest(symbol)
             if current_price <= 0.0:
                 continue
@@ -160,13 +158,30 @@ async def check_tracked_trades_outcomes():
                     outcome = "LOSS"
 
             if outcome:
-                # Update status in database
+                # 1. Update status in tracked_signals table
                 supabase.table("tracked_signals").update({"status": outcome}).eq("id", trade_id).execute()
                 
-                # Send follow-up telegram result notification
-                emoji = "✅ *WIN*" if outcome == "WIN" else "❌ *LOSS*"
+                # 2. Self-Learning Loop: If it's a LOSS, automatically record it into past_mistakes so the AI learns from it!
+                if outcome == "LOSS":
+                    try:
+                        lesson_text = (
+                            f"Autonomous {tf} trade on {symbol} ({direction}) failed at entry {entry}. "
+                            f"Hit Stop Loss at {sl} due to trend reversal or false breakout."
+                        )
+                        mistake_payload = {
+                            "asset_pair": symbol,
+                            "lesson_learned": lesson_text,
+                            "embedding": [0.0] * 384
+                        }
+                        supabase.table("past_mistakes").insert(mistake_payload).execute()
+                        print(f"🧠 Self-Learning Engine: Logged failed {symbol} trade into past mistakes memory.")
+                    except Exception as learn_err:
+                        print(f"Failed to record trade loss into AI memory: {learn_err}")
+
+                # 3. Send follow-up telegram result notification with learning status indicator
+                emoji = "✅ *WIN*" if outcome == "WIN" else "❌ *LOSS (Learned by AI)*"
                 result_alert = (
-                    f"🎯 *TRADE RESULT UPDATE* 🎯\n\n"
+                    f"🎯 *TRADE RESULT & LEARNING UPDATE* 🎯\n\n"
                     f"• *Status:* {emoji}\n"
                     f"• *Asset:* {symbol}\n"
                     f"• *Timeframe:* `{tf}`\n"
@@ -231,7 +246,6 @@ async def autonomous_market_scan():
                 audit_result = await audit_chat_message(audit_req)
                 
                 if audit_result.get("verdict") in ["APPROVED", "WARNING"]:
-                    # Save signal to tracked_signals table for outcome monitoring
                     try:
                         tracked_payload = {
                             "symbol": symbol,
