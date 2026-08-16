@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Shield, History, BookOpen, Send, CheckCircle, AlertTriangle, XCircle, RefreshCw } from 'lucide-react';
+import { auditSignal, fetchHistory as getHistoryFromApi } from './api';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('audit'); // 'audit' | 'history' | 'rules'
@@ -10,7 +11,7 @@ export default function App() {
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [backendStatus, setBackendStatus] = useState('Checking...');
 
-  const API_URL = 'http://127.0.0.1:8000';
+  const API_URL = import.meta.env.VITE_API_BASE_URL || 'https://ai-trading-backend-7z9h.onrender.com';
 
   // Check backend connectivity on mount
   useEffect(() => {
@@ -18,14 +19,13 @@ export default function App() {
       .then((res) => res.json())
       .then(() => setBackendStatus('Backend Connected'))
       .catch(() => setBackendStatus('Backend Disconnected'));
-  }, []);
+  }, [API_URL]);
 
-  // Fetch Trade History when clicking the History tab
-  const fetchHistory = async () => {
+  // Fetch Trade History using the externalized API module
+  const handleFetchHistory = async () => {
     setLoadingHistory(true);
     try {
-      const res = await fetch(`${API_URL}/history?limit=20`);
-      const data = await res.json();
+      const data = await getHistoryFromApi();
       if (data.status === 'success') {
         setHistoryLogs(data.history || []);
       }
@@ -39,7 +39,7 @@ export default function App() {
   const handleTabChange = (tab) => {
     setActiveTab(tab);
     if (tab === 'history') {
-      fetchHistory();
+      handleFetchHistory();
     }
   };
 
@@ -53,12 +53,7 @@ export default function App() {
     setMessage('');
 
     try {
-      const res = await fetch(`${API_URL}/chat-audit`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: currentInput }),
-      });
-      const data = await res.json();
+      const data = await auditSignal(currentInput);
 
       const aiMessage = {
         id: Date.now() + 1,
@@ -237,7 +232,7 @@ export default function App() {
             <div className="flex justify-between items-center mb-6">
               <h3 className="text-lg font-bold text-white">Logged Signals & Audit History</h3>
               <button
-                onClick={fetchHistory}
+                onClick={handleFetchHistory}
                 className="flex items-center gap-2 text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 px-3 py-2 rounded-lg transition"
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${loadingHistory ? 'animate-spin' : ''}`} />
