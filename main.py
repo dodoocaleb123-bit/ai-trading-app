@@ -121,8 +121,65 @@ async def send_telegram_alert(message: str):
         print(f"Failed to dispatch Telegram alert: {e}")
 
 # ------------------------------------------------------------------
-# Section 3: 24/7 Autonomous Multi-Timeframe Background Market Scanner
+# Section 3: Trade Outcome Tracking & Background Scanner
 # ------------------------------------------------------------------
+async def check_tracked_trades_outcomes():
+    """Background task checking active tracked signals against live prices to evaluate Win/Loss status."""
+    try:
+        # Fetch open signals from Supabase
+        response = supabase.table("tracked_signals").select("*").eq("status", "OPEN").execute()
+        open_trades = response.data if response and response.data else []
+        
+        if not open_trades:
+            return
+
+        for trade in open_trades:
+            trade_id = trade["id"]
+            symbol = trade["symbol"]
+            direction = trade["direction"]
+            entry = float(trade["entry_price"])
+            sl = float(trade["stop_loss"])
+            tp = float(trade["take_profit"])
+            tf = trade["timeframe"]
+
+            # Fetch current price
+            current_price = await get_live_price_rest(symbol)
+            if current_price <= 0.0:
+                continue
+
+            outcome = None
+            if direction == "BUY":
+                if current_price >= tp:
+                    outcome = "WIN"
+                elif current_price <= sl:
+                    outcome = "LOSS"
+            elif direction == "SELL":
+                if current_price <= tp:
+                    outcome = "WIN"
+                elif current_price >= sl:
+                    outcome = "LOSS"
+
+            if outcome:
+                # Update status in database
+                supabase.table("tracked_signals").update({"status": outcome}).eq("id", trade_id).execute()
+                
+                # Send follow-up telegram result notification
+                emoji = "✅ *WIN*" if outcome == "WIN" else "❌ *LOSS*"
+                result_alert = (
+                    f"🎯 *TRADE RESULT UPDATE* 🎯\n\n"
+                    f"• *Status:* {emoji}\n"
+                    f"• *Asset:* {symbol}\n"
+                    f"• *Timeframe:* `{tf}`\n"
+                    f"• *Direction:* {direction}\n"
+                    f"• *Entry:* {entry}\n"
+                    f"• *Exit Price:* {current_price}\n"
+                    f"• *Target Hit:* {'Take Profit' if outcome == 'WIN' else 'Stop Loss'}"
+                )
+                await send_telegram_alert(result_alert)
+
+    except Exception as e:
+        print(f"Error checking tracked trade outcomes: {e}")
+
 async def autonomous_market_scan():
     """Background task evaluating market setups across a watchlist and multiple timeframes with asset-aware risk sizing and trend confirmation."""
     forex_open = is_forex_market_open()
@@ -136,7 +193,6 @@ async def autonomous_market_scan():
 
         for tf in timeframes:
             try:
-                # Fetch more candles to check multi-candle trend
                 candles = await fetch_recent_candles(symbol, interval=tf, outputsize=5)
                 if not candles or len(candles) < 3:
                     continue
@@ -147,7 +203,6 @@ async def autonomous_market_scan():
                 high = float(candles[0]["high"])
                 low = float(candles[0]["low"])
                 
-                # Trend Confirmation: Require 3 consecutive candles in the same direction to avoid whipsaws
                 is_bullish = c0 > c1 and c1 > c2
                 is_bearish = c0 < c1 and c1 < c2
                 
@@ -156,13 +211,12 @@ async def autonomous_market_scan():
                     
                 direction = "BUY" if is_bullish else "SELL"
                 
-                # Asset-Aware Stop Loss & Take Profit buffers
                 if "BTC" in symbol:
-                    sl_buffer = c0 * 0.012  # 1.2% for volatile crypto
+                    sl_buffer = c0 * 0.012  
                 elif "XAU" in symbol:
-                    sl_buffer = c0 * 0.003  # 0.3% for Gold
+                    sl_buffer = c0 * 0.003  
                 else:
-                    sl_buffer = c0 * 0.0015 # 0.15% for Forex majors
+                    sl_buffer = c0 * 0.0015 
                 
                 est_sl = round(low - sl_buffer, 4) if direction == "BUY" else round(high + sl_buffer, 4)
                 risk_distance = abs(c0 - est_sl)
@@ -173,12 +227,25 @@ async def autonomous_market_scan():
                     f"Entry Price: {c0}, Stop Loss: {est_sl}, Take Profit: {est_tp}."
                 )
                 
-                # Hand off detected technical setup to AI Audit Engine
                 audit_req = ChatAuditRequest(message=scan_message)
                 audit_result = await audit_chat_message(audit_req)
                 
-                # Push instant alert if AI approves setup against RAG strategy rules
                 if audit_result.get("verdict") in ["APPROVED", "WARNING"]:
+                    # Save signal to tracked_signals table for outcome monitoring
+                    try:
+                        tracked_payload = {
+                            "symbol": symbol,
+                            "direction": direction,
+                            "entry_price": c0,
+                            "stop_loss": est_sl,
+                            "take_profit": est_tp,
+                            "timeframe": tf.upper(),
+                            "status": "OPEN"
+                        }
+                        supabase.table("tracked_signals").insert(tracked_payload).execute()
+                    except Exception as db_err:
+                        print(f"Failed to save tracked signal: {db_err}")
+
                     alert_text = (
                         f"🚨 *TRADING SIGNAL ALERT* 🚨\n\n"
                         f"• *Asset:* {symbol}\n"
@@ -200,8 +267,9 @@ async def autonomous_market_scan():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     scheduler.add_job(autonomous_market_scan, 'interval', minutes=15)
+    scheduler.add_job(check_tracked_trades_outcomes, 'interval', minutes=5)
     scheduler.start()
-    print("🚀 Autonomous Multi-Timeframe Market Scanner Started")
+    print("🚀 Autonomous Multi-Timeframe Market Scanner & Outcome Tracker Started")
     yield
     scheduler.shutdown()
 
