@@ -179,9 +179,14 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+origins = [
+    "http://localhost:5173",
+    "https://ai-trading-app.vercel.app",  # Replace with your exact Vercel URL if different
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
