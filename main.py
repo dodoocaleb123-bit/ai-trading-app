@@ -3,6 +3,7 @@ import json
 import re
 import traceback
 import httpx
+from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -37,6 +38,21 @@ scheduler = AsyncIOScheduler()
 # ------------------------------------------------------------------
 # Section 2: Helper & Market Data Functions
 # ------------------------------------------------------------------
+def is_forex_market_open() -> bool:
+    """Checks if global Forex markets are open (Closes Friday 22:00 UTC, Opens Sunday 22:00 UTC)."""
+    now = datetime.now(timezone.utc)
+    weekday = now.weekday()  # 0 = Monday, 6 = Sunday
+    hour = now.hour
+
+    if weekday == 4 and hour >= 22:  # Friday after 10 PM UTC
+        return False
+    if weekday == 5:  # Saturday
+        return False
+    if weekday == 6 and hour < 22:  # Sunday before 10 PM UTC
+        return False
+
+    return True
+
 def extract_symbol_from_message(message: str) -> str | None:
     """Extracts common trading symbols from raw user signal messages."""
     known_symbols = ["XAUUSD", "EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "BTCUSD", "ETHUSD"]
@@ -108,11 +124,18 @@ async def send_telegram_alert(message: str):
 # Section 3: 24/7 Autonomous Multi-Timeframe Background Market Scanner
 # ------------------------------------------------------------------
 async def autonomous_market_scan():
-    """24/7 background task evaluating market setups across a watchlist and multiple timeframes."""
+    """Background task evaluating market setups across a watchlist and multiple timeframes."""
+    # Guard check: Skip scanning Forex symbols when market is closed
+    forex_open = is_forex_market_open()
+    
     watchlist = ["XAU/USD", "EUR/USD", "GBP/USD", "BTC/USD"]
     timeframes = ["5min", "15min", "1h", "4h"]
     
     for symbol in watchlist:
+        # Skip traditional Forex pairs if the market is closed (BTC/USD runs 24/7)
+        if not forex_open and symbol != "BTC/USD":
+            continue
+
         for tf in timeframes:
             try:
                 candles = await fetch_recent_candles(symbol, interval=tf, outputsize=5)
@@ -166,14 +189,14 @@ async def lifespan(app: FastAPI):
     # Startup: Start background scanner loop (runs every 15 minutes)
     scheduler.add_job(autonomous_market_scan, 'interval', minutes=15)
     scheduler.start()
-    print("🚀 24/7 Multi-Timeframe Market Scanner Started")
+    print("🚀 Autonomous Multi-Timeframe Market Scanner Started")
     yield
     # Shutdown: Stop scheduler gracefully
     scheduler.shutdown()
 
 app = FastAPI(
     title="AI Trading Strategy Audit API",
-    description="RAG-powered API to audit trades and run 24/7 autonomous multi-timeframe market scans.",
+    description="RAG-powered API to audit trades and run autonomous multi-timeframe market scans.",
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
