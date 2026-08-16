@@ -124,59 +124,72 @@ async def send_telegram_alert(message: str):
 # Section 3: 24/7 Autonomous Multi-Timeframe Background Market Scanner
 # ------------------------------------------------------------------
 async def autonomous_market_scan():
-    """Background task evaluating market setups across a watchlist and multiple timeframes."""
-    # Guard check: Skip scanning Forex symbols when market is closed
+    """Background task evaluating market setups across a watchlist and multiple timeframes with asset-aware risk sizing and trend confirmation."""
     forex_open = is_forex_market_open()
     
     watchlist = ["XAU/USD", "EUR/USD", "GBP/USD", "BTC/USD"]
-    timeframes = ["5min", "15min", "1h", "4h"]
+    timeframes = ["15min", "1h", "4h"]
     
     for symbol in watchlist:
-        # Skip traditional Forex pairs if the market is closed (BTC/USD runs 24/7)
         if not forex_open and symbol != "BTC/USD":
             continue
 
         for tf in timeframes:
             try:
+                # Fetch more candles to check multi-candle trend
                 candles = await fetch_recent_candles(symbol, interval=tf, outputsize=5)
-                if not candles or len(candles) < 2:
+                if not candles or len(candles) < 3:
                     continue
                     
-                latest_close = float(candles[0]["close"])
-                prev_close = float(candles[1]["close"])
+                c0 = float(candles[0]["close"])
+                c1 = float(candles[1]["close"])
+                c2 = float(candles[2]["close"])
                 high = float(candles[0]["high"])
                 low = float(candles[0]["low"])
                 
-                # Technical Trigger: Evaluate volatility / price expansion (>0.1% move)
-                price_change_pct = abs((latest_close - prev_close) / prev_close) * 100
+                # Trend Confirmation: Require 3 consecutive candles in the same direction to avoid whipsaws
+                is_bullish = c0 > c1 and c1 > c2
+                is_bearish = c0 < c1 and c1 < c2
                 
-                if price_change_pct >= 0.10:
-                    direction = "BUY" if latest_close > prev_close else "SELL"
-                    est_sl = round(low - (latest_close * 0.002), 4) if direction == "BUY" else round(high + (latest_close * 0.002), 4)
-                    est_tp = round(latest_close + (abs(latest_close - est_sl) * 2), 4) if direction == "BUY" else round(latest_close - (abs(latest_close - est_sl) * 2), 4)
+                if not is_bullish and not is_bearish:
+                    continue  
                     
-                    scan_message = (
-                        f"AUTOMATED 24/7 SCAN [{tf.upper()}]: Potential {direction} setup on {symbol}. "
-                        f"Entry Price: {latest_close}, Stop Loss: {est_sl}, Take Profit: {est_tp}."
+                direction = "BUY" if is_bullish else "SELL"
+                
+                # Asset-Aware Stop Loss & Take Profit buffers
+                if "BTC" in symbol:
+                    sl_buffer = c0 * 0.012  # 1.2% for volatile crypto
+                elif "XAU" in symbol:
+                    sl_buffer = c0 * 0.003  # 0.3% for Gold
+                else:
+                    sl_buffer = c0 * 0.0015 # 0.15% for Forex majors
+                
+                est_sl = round(low - sl_buffer, 4) if direction == "BUY" else round(high + sl_buffer, 4)
+                risk_distance = abs(c0 - est_sl)
+                est_tp = round(c0 + (risk_distance * 2), 4) if direction == "BUY" else round(c0 - (risk_distance * 2), 4)
+                
+                scan_message = (
+                    f"AUTOMATED 24/7 SCAN [{tf.upper()}]: Confirmed trend {direction} setup on {symbol}. "
+                    f"Entry Price: {c0}, Stop Loss: {est_sl}, Take Profit: {est_tp}."
+                )
+                
+                # Hand off detected technical setup to AI Audit Engine
+                audit_req = ChatAuditRequest(message=scan_message)
+                audit_result = await audit_chat_message(audit_req)
+                
+                # Push instant alert if AI approves setup against RAG strategy rules
+                if audit_result.get("verdict") in ["APPROVED", "WARNING"]:
+                    alert_text = (
+                        f"🚨 *TRADING SIGNAL ALERT* 🚨\n\n"
+                        f"• *Asset:* {symbol}\n"
+                        f"• *Timeframe:* `{tf.upper()}`\n"
+                        f"• *Direction:* {direction}\n"
+                        f"• *Entry:* {c0}\n"
+                        f"• *Stop Loss:* {est_sl}\n"
+                        f"• *Take Profit:* {est_tp}\n"
+                        f"• *Risk/Reward:* 1:2"
                     )
-                    
-                    # Hand off detected technical setup to AI Audit Engine
-                    audit_req = ChatAuditRequest(message=scan_message)
-                    audit_result = await audit_chat_message(audit_req)
-                    
-                    # Push instant alert if AI approves setup against RAG strategy rules
-                    if audit_result.get("verdict") in ["APPROVED", "WARNING"]:
-                        # Custom cleanly formatted message payload
-                        alert_text = (
-                            f"🚨 *TRADING SIGNAL ALERT* 🚨\n\n"
-                            f"• *Asset:* {symbol}\n"
-                            f"• *Direction:* {direction}\n"
-                            f"• *Entry:* {latest_close}\n"
-                            f"• *Stop Loss:* {est_sl}\n"
-                            f"• *Take Profit:* {est_tp}\n"
-                            f"• *Risk/Reward:* 1:2"
-                        )
-                        await send_telegram_alert(alert_text)
+                    await send_telegram_alert(alert_text)
                         
             except Exception as e:
                 print(f"Error during background scan for {symbol} on {tf}: {e}")
@@ -186,12 +199,10 @@ async def autonomous_market_scan():
 # ------------------------------------------------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: Start background scanner loop (runs every 15 minutes)
     scheduler.add_job(autonomous_market_scan, 'interval', minutes=15)
     scheduler.start()
     print("🚀 Autonomous Multi-Timeframe Market Scanner Started")
     yield
-    # Shutdown: Stop scheduler gracefully
     scheduler.shutdown()
 
 app = FastAPI(
@@ -256,14 +267,12 @@ def root():
 @app.post("/chat-audit", response_model=AuditResponse)
 async def audit_chat_message(req: ChatAuditRequest):
     try:
-        # Check active session status for traditional Forex market
         forex_open = is_forex_market_open()
         market_status_note = (
             "Forex Market is OPEN." if forex_open 
             else "Forex Market is CLOSED (Weekend session). Note: Crypto assets like BTC/USD trade 24/7 and are fully active."
         )
 
-        # 1. Fetch live market price if a ticker/symbol is detected
         live_price_info = "Live market price unavailable."
         
         for symbol in ["XAUUSD", "EURUSD", "GBPUSD", "BTCUSD"]:
@@ -279,10 +288,8 @@ async def audit_chat_message(req: ChatAuditRequest):
             if current_price > 0:
                 live_price_info = f"Current Live Market Price for {detected_symbol}: {current_price}"
 
-        # 2. Fallback query vector (384 dimensions for pgvector compatibility)
         query_vector = [0.0] * 384
 
-        # 3. Vector Search against strategy rules & past mistakes
         relevant_rules = []
         try:
             rules_resp = supabase.rpc(
@@ -308,7 +315,6 @@ async def audit_chat_message(req: ChatAuditRequest):
         rules_context = "\n---\n".join(relevant_rules) if relevant_rules else "No specific strategy rules matched."
         mistakes_context = "\n---\n".join(past_mistakes) if past_mistakes else "No similar past mistakes detected."
 
-        # 4. Build prompt incorporating market session context and live feeds
         prompt = f"""You are an expert AI Trading Copilot and Risk Manager inside a live trading chat application.
 The trader just posted this raw trade signal:
 
@@ -364,7 +370,6 @@ Return ONLY a valid JSON object matching this exact structure:
         raw_reply = chat_completion.choices[0].message.content
         audit_data = json.loads(raw_reply)
 
-        # Save to history with fallback error handling
         try:
             log_entry = {
                 "asset_pair": detected_symbol if detected_symbol else "CHAT_SIGNAL",
