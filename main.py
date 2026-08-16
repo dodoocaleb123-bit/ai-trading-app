@@ -140,16 +140,16 @@ async def autonomous_market_scan():
                 audit_result = await audit_chat_message(audit_req)
                 
                 # Push instant alert if AI approves setup against RAG strategy rules
-                if audit_result.verdict in ["APPROVED", "WARNING"]:
+                if audit_result.get("verdict") in ["APPROVED", "WARNING"]:
                     alert_text = (
                         f"🚨 **AUTONOMOUS AI TRADE ALERT** 🚨\n\n"
                         f"**Asset:** {symbol}\n"
                         f"**Direction:** {direction}\n"
                         f"**Live Entry:** {latest_close}\n"
-                        f"**Verdict:** {audit_result.verdict} ({audit_result.confidence_score}% Confidence)\n"
-                        f"**Risk/Reward Ratio:** {audit_result.risk_reward_ratio}\n\n"
-                        f"**Summary:** {audit_result.summary}\n\n"
-                        f"**Suggested Improvements:** {', '.join(audit_result.improvements)}"
+                        f"**Verdict:** {audit_result.get('verdict')} ({audit_result.get('confidence_score', 0)}% Confidence)\n"
+                        f"**Risk/Reward Ratio:** {audit_result.get('risk_reward_ratio', 0.0)}\n\n"
+                        f"**Summary:** {audit_result.get('summary', '')}\n\n"
+                        f"**Suggested Improvements:** {', '.join(audit_result.get('improvements', []))}"
                     )
                     await send_telegram_alert(alert_text)
                     
@@ -173,6 +173,9 @@ app = FastAPI(
     title="AI Trading Strategy Audit API",
     description="RAG-powered API to audit trades and run 24/7 autonomous market scans.",
     version="1.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc",
+    openapi_url="/openapi.json",
     lifespan=lifespan
 )
 
@@ -236,29 +239,33 @@ async def audit_chat_message(req: ChatAuditRequest):
             if current_price > 0:
                 live_price_info = f"Current Live Market Price for {detected_symbol}: {current_price}"
 
-        # 2. Fallback query vector (384 dimensions for pgvector compatibility without sentence_transformers)
+        # 2. Fallback query vector (384 dimensions for pgvector compatibility)
         query_vector = [0.0] * 384
 
         # 3. Vector Search against strategy rules & past mistakes
+        relevant_rules = []
         try:
             rules_resp = supabase.rpc(
                 'match_strategy_rules', 
                 {'query_embedding': query_vector, 'match_threshold': 0.1, 'match_count': 5}
             ).execute()
-            relevant_rules = [r['content'] for r in rules_resp.data] if rules_resp.data else []
-        except Exception:
-            relevant_rules = []
+            if rules_resp and rules_resp.data:
+                relevant_rules = [r['content'] for r in rules_resp.data if 'content' in r]
+        except Exception as e:
+            print(f"Strategy rules RPC search skipped: {e}")
 
+        past_mistakes = []
         try:
             mistakes_resp = supabase.rpc(
                 'match_past_mistakes', 
                 {'query_embedding': query_vector, 'match_threshold': 0.1, 'match_count': 3}
             ).execute()
-            past_mistakes = [f"[{m['asset_pair']}] {m['lesson_learned']}" for m in mistakes_resp.data] if mistakes_resp.data else []
-        except Exception:
-            past_mistakes = []
+            if mistakes_resp and mistakes_resp.data:
+                past_mistakes = [f"[{m.get('asset_pair', 'ALL')}] {m.get('lesson_learned', '')}" for m in mistakes_resp.data]
+        except Exception as e:
+            print(f"Past mistakes RPC search skipped: {e}")
 
-        rules_context = "\n---\n".join(relevant_rules) if relevant_rules else "No specific PDF rules matched."
+        rules_context = "\n---\n".join(relevant_rules) if relevant_rules else "No specific strategy rules matched."
         mistakes_context = "\n---\n".join(past_mistakes) if past_mistakes else "No similar past mistakes detected."
 
         # 4. Build prompt incorporating live market feeds
@@ -313,17 +320,20 @@ Return ONLY a valid JSON object matching this exact structure:
         raw_reply = chat_completion.choices[0].message.content
         audit_data = json.loads(raw_reply)
 
-        # Save to history
-        log_entry = {
-            "asset_pair": detected_symbol if detected_symbol else "CHAT_SIGNAL",
-            "direction": "AUDIT",
-            "entry_price": 0.0,
-            "stop_loss": 0.0,
-            "take_profit": 0.0,
-            "setup_notes": req.message,
-            "audit_report": raw_reply
-        }
-        supabase.table("trade_signals").insert(log_entry).execute()
+        # Save to history with fallback error handling
+        try:
+            log_entry = {
+                "asset_pair": detected_symbol if detected_symbol else "CHAT_SIGNAL",
+                "direction": "AUDIT",
+                "entry_price": 0.0,
+                "stop_loss": 0.0,
+                "take_profit": 0.0,
+                "setup_notes": req.message,
+                "audit_report": raw_reply
+            }
+            supabase.table("trade_signals").insert(log_entry).execute()
+        except Exception as db_err:
+            print(f"Warning: Failed to log audit signal to Supabase trade_signals table: {db_err}")
 
         return audit_data
 
@@ -343,12 +353,14 @@ def add_mistake(req: MistakeRequest):
         supabase.table("past_mistakes").insert(data).execute()
         return {"status": "success", "message": "Mistake logged to memory"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Database error logging mistake: {str(e)}")
 
 @app.get("/history")
 def get_history(limit: int = 10):
     try:
         resp = supabase.table("trade_signals").select("*").order("created_at", desc=True).limit(limit).execute()
-        return {"status": "success", "history": resp.data}
+        return {"status": "success", "history": resp.data if resp.data else []}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Database query failed. Please ensure table 'trade_signals' exists in Supabase. Internal error: {str(e)}")
