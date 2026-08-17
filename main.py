@@ -248,8 +248,9 @@ async def autonomous_market_scan():
     global last_alerted_candles
     forex_open = is_forex_market_open()
     
-    watchlist = ["XAU/USD", "EUR/USD", "GBP/USD", "BTC/USD"]
-    timeframes = ["15min", "1h", "4h"]
+    # Optimized watchlist and timeframes to stay under Twelve Data free tier limits (8 requests/min)
+    watchlist = ["XAU/USD", "EUR/USD", "BTC/USD"]
+    timeframes = ["15min", "1h"]
     
     for symbol in watchlist:
         if not forex_open and symbol != "BTC/USD":
@@ -336,8 +337,9 @@ async def autonomous_market_scan():
 # ------------------------------------------------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    scheduler.add_job(autonomous_market_scan, 'interval', minutes=1)
-    scheduler.add_job(check_tracked_trades_outcomes, 'interval', minutes=5)
+    # Scheduled to run every 5 minutes to stay well under Twelve Data free tier limits (8 req/min)
+    scheduler.add_job(autonomous_market_scan, 'interval', minutes=5)
+    scheduler.add_job(check_tracked_trades_outcomes, 'interval', minutes=10)
     scheduler.start()
     print("🚀 Autonomous Multi-Timeframe Market Scanner & Outcome Tracker Started")
     yield
