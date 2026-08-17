@@ -105,11 +105,11 @@ async def fetch_recent_candles(symbol: str, interval: str = "15min", outputsize:
         print(f"Error fetching candles for {symbol} ({interval}): {e}")
         return []
 
-async def send_telegram_alert(message: str):
-    """Pushes autonomous trade signals directly to your mobile device via Telegram."""
+async def send_telegram_alert(message: str, reply_to_message_id: int = None) -> int | None:
+    """Pushes autonomous trade signals or threaded replies directly to Telegram and returns the message ID."""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print("Telegram credentials missing in .env file.")
-        return
+        return None
         
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
@@ -117,11 +117,20 @@ async def send_telegram_alert(message: str):
         "text": message,
         "parse_mode": "Markdown"
     }
+    
+    if reply_to_message_id:
+        payload["reply_to_message_id"] = reply_to_message_id
+
     try:
         async with httpx.AsyncClient() as client:
-            await client.post(url, json=payload, timeout=5.0)
+            res = await client.post(url, json=payload, timeout=5.0)
+            data = res.json()
+            if data.get("ok"):
+                return data["result"]["message_id"]
     except Exception as e:
         print(f"Failed to dispatch Telegram alert: {e}")
+        
+    return None
 
 # ------------------------------------------------------------------
 # Section 3: Trade Outcome Tracking & Background Scanner
@@ -143,6 +152,7 @@ async def check_tracked_trades_outcomes():
             sl = float(trade["stop_loss"])
             tp = float(trade["take_profit"])
             tf = trade["timeframe"]
+            original_msg_id = trade.get("telegram_message_id")
 
             current_price = await get_live_price_rest(symbol)
             if current_price <= 0.0:
@@ -203,22 +213,18 @@ Return ONLY the text of the new strategy rule (1 sentence max)."""
                     except Exception as learn_err:
                         print(f"Failed to record trade loss into AI strategy rules: {learn_err}")
 
-                # 3. Send Telegram result notification with learning status indicator
+                # 3. Send threaded Telegram result notification replying directly to the signal
                 emoji = "✅ *WIN*" if outcome == "WIN" else "❌ *LOSS (AI Self-Updated)*"
                 result_alert = (
-                    f"🎯 *TRADE RESULT & AI LEARNING REPORT* 🎯\n\n"
+                    f"🎯 *TRADE RESULT REPORT*\n\n"
                     f"• *Status:* {emoji}\n"
-                    f"• *Asset:* {symbol}\n"
-                    f"• *Timeframe:* `{tf}`\n"
-                    f"• *Direction:* {direction}\n"
-                    f"• *Entry:* {entry}\n"
                     f"• *Exit Price:* {current_price}\n"
                     f"• *Target Hit:* {'Take Profit' if outcome == 'WIN' else 'Stop Loss'}"
                 )
                 if new_rule_created:
-                    result_alert += f"\n\n💡 *AI Adaptation:* A new protective risk rule has been added to your database to filter out similar setups."
+                    result_alert += f"\n\n💡 *AI Adaptation:* Protective risk rule added."
 
-                await send_telegram_alert(result_alert)
+                await send_telegram_alert(result_alert, reply_to_message_id=original_msg_id)
 
     except Exception as e:
         print(f"Error checking tracked trade outcomes: {e}")
@@ -284,20 +290,6 @@ async def autonomous_market_scan():
                 audit_result = await audit_chat_message(audit_req)
                 
                 if audit_result.get("verdict") in ["APPROVED", "WARNING"]:
-                    try:
-                        tracked_payload = {
-                            "symbol": symbol,
-                            "direction": direction,
-                            "entry_price": c0,
-                            "stop_loss": est_sl,
-                            "take_profit": est_tp,
-                            "timeframe": tf.upper(),
-                            "status": "OPEN"
-                        }
-                        supabase.table("tracked_signals").insert(tracked_payload).execute()
-                    except Exception as db_err:
-                        print(f"Failed to save tracked signal: {db_err}")
-
                     alert_text = (
                         f"🚨 *TRADING SIGNAL ALERT* 🚨\n\n"
                         f"• *Asset:* {symbol}\n"
@@ -308,7 +300,24 @@ async def autonomous_market_scan():
                         f"• *Take Profit:* {est_tp}\n"
                         f"• *Risk/Reward:* 1:2"
                     )
-                    await send_telegram_alert(alert_text)
+                    
+                    # Send initial alert to Telegram and capture its message ID
+                    msg_id = await send_telegram_alert(alert_text)
+
+                    try:
+                        tracked_payload = {
+                            "symbol": symbol,
+                            "direction": direction,
+                            "entry_price": c0,
+                            "stop_loss": est_sl,
+                            "take_profit": est_tp,
+                            "timeframe": tf.upper(),
+                            "status": "OPEN",
+                            "telegram_message_id": msg_id
+                        }
+                        supabase.table("tracked_signals").insert(tracked_payload).execute()
+                    except Exception as db_err:
+                        print(f"Failed to save tracked signal: {db_err}")
                         
             except Exception as e:
                 print(f"Error during background scan for {symbol} on {tf}: {e}")
