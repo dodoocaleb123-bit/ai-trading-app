@@ -11,6 +11,9 @@ export default function App() {
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [backendStatus, setBackendStatus] = useState('Checking...');
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [auditLoading, setAuditLoading] = useState(false);
+  const [auditError, setAuditError] = useState('');
+  const [historyError, setHistoryError] = useState('');
 
   // Strategy Rule Injection State
   const [ruleText, setRuleText] = useState('');
@@ -30,13 +33,16 @@ export default function App() {
   // Fetch Trade History using the externalized API module
   const handleFetchHistory = async () => {
     setLoadingHistory(true);
+    setHistoryError('');
     try {
       const data = await getHistoryFromApi();
-      if (data.status === 'success') {
-        setHistoryLogs(data.history || []);
+      if (data.status !== 'success') {
+        throw new Error('The server returned an unexpected history response.');
       }
+      setHistoryLogs(data.history || []);
     } catch (err) {
       console.error('Failed to fetch trade history:', err);
+      setHistoryError(err.message || 'Unable to load trade history. Check the API connection and try again.');
     } finally {
       setLoadingHistory(false);
     }
@@ -52,12 +58,14 @@ export default function App() {
 
   const handleSendAudit = async (e) => {
     e.preventDefault();
-    if (!message.trim()) return;
+    if (!message.trim() || auditLoading) return;
 
     const userMessage = { id: Date.now(), role: 'user', text: message };
     setChatLogs((prev) => [...prev, userMessage]);
     const currentInput = message;
     setMessage('');
+    setAuditError('');
+    setAuditLoading(true);
 
     try {
       const data = await auditSignal(currentInput);
@@ -72,6 +80,9 @@ export default function App() {
       setSelectedAudit(data);
     } catch (err) {
       console.error('Error running audit:', err);
+      setAuditError(err.message || 'Unable to run the audit. Check the API connection and try again.');
+    } finally {
+      setAuditLoading(false);
     }
   };
 
@@ -231,18 +242,25 @@ export default function App() {
                 <input
                   type="text"
                   value={message}
+                  disabled={auditLoading}
                   onChange={(e) => setMessage(e.target.value)}
                   placeholder="Type signal (e.g. Buy EURUSD at 1.0850, SL 1.0820, TP 1.0940)..."
                   className="flex-1 min-w-0 bg-slate-900 border border-slate-800 rounded-lg px-3 md:px-4 py-2 md:py-2.5 text-xs md:text-sm text-white focus:outline-none focus:border-indigo-500"
                 />
                 <button
                   type="submit"
-                  className="bg-indigo-600 hover:bg-indigo-500 text-white px-3 md:px-5 py-2 md:py-2.5 rounded-lg text-xs md:text-sm font-semibold flex items-center gap-1.5 md:gap-2 transition flex-shrink-0"
+                  disabled={auditLoading}
+                  className="bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-800 text-white px-3 md:px-5 py-2 md:py-2.5 rounded-lg text-xs md:text-sm font-semibold flex items-center gap-1.5 md:gap-2 transition flex-shrink-0"
                 >
                   <Send className="w-3.5 h-3.5 md:w-4 md:h-4" />
-                  <span>Send</span>
+                  <span>{auditLoading ? 'Auditing...' : 'Send'}</span>
                 </button>
               </form>
+              {auditError && (
+                <p role="alert" className="px-4 pb-3 text-xs text-red-400">
+                  {auditError}
+                </p>
+              )}
             </div>
 
             {/* Audit Inspector Panel */}
@@ -303,6 +321,10 @@ export default function App() {
                 <span>Refresh History</span>
               </button>
             </div>
+
+            {historyError && (
+              <p role="alert" className="mb-4 text-xs text-red-400">{historyError}</p>
+            )}
 
             {historyLogs.length === 0 ? (
               <p className="text-slate-500 text-xs md:text-sm">No historical trade records found in Supabase.</p>
