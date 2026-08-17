@@ -12,6 +12,11 @@ export default function App() {
   const [backendStatus, setBackendStatus] = useState('Checking...');
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
+  // Strategy Rule Injection State
+  const [ruleText, setRuleText] = useState('');
+  const [ruleStatus, setRuleStatus] = useState('');
+  const [ruleLoading, setRuleLoading] = useState(false);
+
   const API_URL = import.meta.env.VITE_API_BASE_URL || 'https://ai-trading-backend-7z9h.onrender.com';
 
   // Check backend connectivity on mount
@@ -67,6 +72,34 @@ export default function App() {
       setSelectedAudit(data);
     } catch (err) {
       console.error('Error running audit:', err);
+    }
+  };
+
+  const handleAddRule = async (e) => {
+    e.preventDefault();
+    if (!ruleText.trim()) return;
+
+    setRuleLoading(true);
+    setRuleStatus('');
+
+    try {
+      const response = await fetch(`${API_URL}/add-rule`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rule_content: ruleText }),
+      });
+      const data = await response.json();
+      
+      if (response.ok) {
+        setRuleStatus('✅ Rule successfully injected into AI memory!');
+        setRuleText('');
+      } else {
+        setRuleStatus(`❌ Error: ${data.detail || 'Failed to save rule'}`);
+      }
+    } catch (err) {
+      setRuleStatus('❌ Network error connecting to backend.');
+    } finally {
+      setRuleLoading(false);
     }
   };
 
@@ -307,16 +340,40 @@ export default function App() {
 
         {/* Tab 3: Strategy Rules View */}
         {activeTab === 'rules' && (
-          <div className="flex-1 p-4 md:p-6 overflow-y-auto">
+          <div className="flex-1 p-4 md:p-6 overflow-y-auto max-w-3xl">
             <h3 className="text-base md:text-lg font-bold text-white mb-2">Strategy Rules & Knowledge Base</h3>
             <p className="text-xs md:text-sm text-slate-400 mb-6">
-              Your uploaded strategy documents and custom trading parameters are processed and indexed into Supabase Vector Memory.
+              Teach your AI sentinel custom trading principles or constraints. The background scanner and chat auditor will immediately enforce these rules using vector embeddings.
             </p>
+
+            {/* Strategy Rule Injection Form */}
+            <form onSubmit={handleAddRule} className="space-y-4 mb-6">
+              <textarea
+                className="w-full p-3 bg-slate-900 border border-slate-700 rounded-lg text-sm text-slate-200 focus:outline-none focus:border-indigo-500 placeholder-slate-500"
+                rows="3"
+                placeholder="e.g., Avoid trading EUR/USD during major US economic news releases or high volatility..."
+                value={ruleText}
+                onChange={(e) => setRuleText(e.target.value)}
+              />
+              <button
+                type="submit"
+                disabled={ruleLoading}
+                className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-800 rounded-lg font-semibold text-sm transition shadow-md text-white"
+              >
+                {ruleLoading ? 'Injecting into Memory...' : 'Inject Rule into AI Memory'}
+              </button>
+            </form>
+
+            {ruleStatus && (
+              <p className="text-xs mb-6 text-center font-medium text-slate-300">
+                {ruleStatus}
+              </p>
+            )}
 
             <div className="p-4 md:p-5 bg-slate-900 border border-slate-800 rounded-xl space-y-3">
               <h4 className="font-semibold text-indigo-400 text-xs md:text-sm">Active RAG Integration</h4>
               <p className="text-xs text-slate-300 leading-relaxed">
-                Whenever a manual trade signal is entered or an automated 24/7 background scan triggers, the system matches signal text embeddings against your stored strategy vectors using cosine similarity search (`match_strategy_rules`).
+                Whenever a manual trade signal is entered or an automated 24/7 background scan triggers, the system matches signal text embeddings against your stored strategy vectors using cosine similarity search (<code className="text-indigo-300">match_strategy_rules</code>).
               </p>
             </div>
           </div>
