@@ -92,7 +92,7 @@ async def get_live_price_rest(symbol: str) -> float:
     return 0.0
 
 async def fetch_recent_candles(symbol: str, interval: str = "15min", outputsize: int = 5) -> list[dict]:
-    """Fetches recent OHLCV candlestick time-series data from Twelve Data[cite: 2]."""
+    """Fetches recent OHLCV candlestick time-series data from Twelve Data."""
     if not TWELVE_DATA_API_KEY:
         return []
     url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize={outputsize}&apikey={TWELVE_DATA_API_KEY}"
@@ -180,7 +180,7 @@ async def check_tracked_trades_outcomes():
                 # 2. Advanced Self-Learning Loop: Forensic Analysis on Loss
                 if outcome == "LOSS":
                     try:
-                        # Fetch recent candles leading to failure for forensic analysis[cite: 2]
+                        # Fetch recent candles leading to failure for forensic analysis
                         failure_candles = await fetch_recent_candles(symbol, interval=tf, outputsize=3)
                         market_context_str = f"Candles leading to loss: {failure_candles}" if failure_candles else "No candle data available."
 
@@ -206,7 +206,7 @@ Return ONLY a valid JSON object matching this exact structure:
                         new_rule_content = diag_data.get("new_rule", f"Exercise caution on {symbol} {tf} setups during high volatility.")
                         diagnostic_summary = root_cause
 
-                        # Save forensic root cause to past_mistakes[cite: 2]
+                        # Save forensic root cause to past_mistakes
                         mistake_payload = {
                             "asset_pair": symbol,
                             "lesson_learned": f"Forensic Loss Analysis [{tf}]: {root_cause}",
@@ -214,7 +214,7 @@ Return ONLY a valid JSON object matching this exact structure:
                         }
                         supabase.table("past_mistakes").insert(mistake_payload).execute()
 
-                        # Save adaptive rule to strategy_rules[cite: 2]
+                        # Save adaptive rule to strategy_rules
                         rule_payload = {
                             "content": f"[Auto-Learned Guardrail from {symbol} Loss]: {new_rule_content}",
                             "embedding": [0.0] * 384
@@ -395,6 +395,9 @@ class MistakeRequest(BaseModel):
     asset_pair: str
     lesson_learned: str
 
+class StrategyRuleRequest(BaseModel):
+    rule_content: str
+
 # ------------------------------------------------------------------
 # Section 6: Endpoints
 # ------------------------------------------------------------------
@@ -542,6 +545,25 @@ def add_mistake(req: MistakeRequest):
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Database error logging mistake: {str(e)}")
+
+@app.post("/add-rule")
+def add_strategy_rule(req: StrategyRuleRequest):
+    try:
+        embedding = [0.0] * 384
+        data = {
+            "content": f"[User Custom Rule]: {req.rule_content}",
+            "embedding": embedding
+        }
+        supabase.table("strategy_rules").insert(data).execute()
+        return {"status": "success", "message": "Custom strategy rule added to AI memory!"}
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Database error saving rule: {str(e)}")
+
+# Added alias endpoint to support alternative frontend paths if requested
+@app.post("/rules")
+def add_strategy_rule_alias(req: StrategyRuleRequest):
+    return add_strategy_rule(req)
 
 @app.get("/history")
 def get_history(limit: int = 10):
