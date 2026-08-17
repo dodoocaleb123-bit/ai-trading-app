@@ -92,7 +92,7 @@ async def get_live_price_rest(symbol: str) -> float:
     return 0.0
 
 async def fetch_recent_candles(symbol: str, interval: str = "15min", outputsize: int = 5) -> list[dict]:
-    """Fetches recent OHLCV candlestick time-series data from Twelve Data."""
+    """Fetches recent OHLCV candlestick time-series data from Twelve Data[cite: 2]."""
     if not TWELVE_DATA_API_KEY:
         return []
     url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize={outputsize}&apikey={TWELVE_DATA_API_KEY}"
@@ -136,7 +136,7 @@ async def send_telegram_alert(message: str, reply_to_message_id: int = None) -> 
 # Section 3: Trade Outcome Tracking & Background Scanner
 # ------------------------------------------------------------------
 async def check_tracked_trades_outcomes():
-    """Background task checking active tracked signals against live prices, evaluating Win/Loss, and updating AI strategy rules on losses."""
+    """Background task checking active tracked signals against live prices, evaluating Win/Loss, and running forensic self-learning on losses."""
     try:
         response = supabase.table("tracked_signals").select("*").eq("status", "OPEN").execute()
         open_trades = response.data if response and response.data else []
@@ -175,54 +175,68 @@ async def check_tracked_trades_outcomes():
                 supabase.table("tracked_signals").update({"status": outcome}).eq("id", trade_id).execute()
                 
                 new_rule_created = False
+                diagnostic_summary = ""
                 
-                # 2. Self-Learning Loop: If it's a LOSS, record mistake and generate new strategy rule
+                # 2. Advanced Self-Learning Loop: Forensic Analysis on Loss
                 if outcome == "LOSS":
                     try:
-                        lesson_text = (
-                            f"Autonomous {tf} trade on {symbol} ({direction}) failed at entry {entry}. "
-                            f"Hit Stop Loss at {sl} due to trend reversal or false breakout."
+                        # Fetch recent candles leading to failure for forensic analysis[cite: 2]
+                        failure_candles = await fetch_recent_candles(symbol, interval=tf, outputsize=3)
+                        market_context_str = f"Candles leading to loss: {failure_candles}" if failure_candles else "No candle data available."
+
+                        diagnosis_prompt = f"""You are an expert quantitative trading risk manager. An autonomous trade just failed. Analyze the failure and write a specific, forensic lesson learned.
+Asset: {symbol} | Timeframe: {tf} | Direction: {direction} | Entry: {entry} | Stop Loss Hit: {sl} | Exit Price: {current_price}
+{market_context_str}
+
+Return ONLY a valid JSON object matching this exact structure:
+{{
+  "root_cause": "<1-sentence explanation of why the trade failed based on price action>",
+  "new_rule": "<1-sentence concise, actionable trading guardrail rule to prevent this specific mistake>"
+}}"""
+
+                        diagnosis_completion = groq_client.chat.completions.create(
+                            messages=[{"role": "user", "content": diagnosis_prompt}],
+                            model="llama-3.1-8b-instant",
+                            response_format={"type": "json_object"},
+                            temperature=0.2
                         )
+                        
+                        diag_data = json.loads(diagnosis_completion.choices[0].message.content)
+                        root_cause = diag_data.get("root_cause", "False breakout or unexpected volatility spike.")
+                        new_rule_content = diag_data.get("new_rule", f"Exercise caution on {symbol} {tf} setups during high volatility.")
+                        diagnostic_summary = root_cause
+
+                        # Save forensic root cause to past_mistakes[cite: 2]
                         mistake_payload = {
                             "asset_pair": symbol,
-                            "lesson_learned": lesson_text,
+                            "lesson_learned": f"Forensic Loss Analysis [{tf}]: {root_cause}",
                             "embedding": [0.0] * 384
                         }
                         supabase.table("past_mistakes").insert(mistake_payload).execute()
 
-                        # Generate adaptive rule via Groq
-                        rule_prompt = f"""Based on this failed trade outcome, write a concise, actionable trading strategy rule or guardrail to prevent repeating this mistake:
-Asset: {symbol} | Timeframe: {tf} | Direction: {direction} | Entry: {entry} | Stop Loss Hit: {sl}
-
-Return ONLY the text of the new strategy rule (1 sentence max)."""
-
-                        rule_completion = groq_client.chat.completions.create(
-                            messages=[{"role": "user", "content": rule_prompt}],
-                            model="llama-3.1-8b-instant",
-                            temperature=0.3
-                        )
-                        new_rule_content = rule_completion.choices[0].message.content.strip()
-
+                        # Save adaptive rule to strategy_rules[cite: 2]
                         rule_payload = {
-                            "content": f"[Auto-Learned Rule from {symbol} Loss]: {new_rule_content}",
+                            "content": f"[Auto-Learned Guardrail from {symbol} Loss]: {new_rule_content}",
                             "embedding": [0.0] * 384
                         }
                         supabase.table("strategy_rules").insert(rule_payload).execute()
                         new_rule_created = True
-                        print(f"🧠 Autonomous AI Learning: Created new strategy rule from {symbol} loss.")
+                        print(f"🧠 Advanced AI Learning: Successfully diagnosed {symbol} loss and updated strategy rules.")
                     except Exception as learn_err:
-                        print(f"Failed to record trade loss into AI strategy rules: {learn_err}")
+                        print(f"Failed to record advanced trade loss analysis: {learn_err}")
 
                 # 3. Send threaded Telegram result notification replying directly to the signal
-                emoji = "✅ *WIN*" if outcome == "WIN" else "❌ *LOSS (AI Self-Updated)*"
+                emoji = "✅ *WIN*" if outcome == "WIN" else "❌ *LOSS (AI Self-Diagnosed)*"
                 result_alert = (
                     f"🎯 *TRADE RESULT REPORT*\n\n"
                     f"• *Status:* {emoji}\n"
                     f"• *Exit Price:* {current_price}\n"
                     f"• *Target Hit:* {'Take Profit' if outcome == 'WIN' else 'Stop Loss'}"
                 )
+                if diagnostic_summary:
+                    result_alert += f"\n\n🔍 *AI Root Cause:* {diagnostic_summary}"
                 if new_rule_created:
-                    result_alert += f"\n\n💡 *AI Adaptation:* Protective risk rule added."
+                    result_alert += f"\n\n💡 *AI Adaptation:* Protective risk rule registered."
 
                 await send_telegram_alert(result_alert, reply_to_message_id=original_msg_id)
 
@@ -250,7 +264,6 @@ async def autonomous_market_scan():
                 latest_candle_time = candles[0]["datetime"]
                 cache_key = f"{symbol}_{tf}"
                 
-                # Prevent duplicate alerts for the exact same active candle period
                 if last_alerted_candles.get(cache_key) == latest_candle_time:
                     continue
                     
@@ -265,17 +278,14 @@ async def autonomous_market_scan():
                     continue  
                     
                 direction = "BUY" if is_bullish else "SELL"
-                
-                # Mark this candle as processed
                 last_alerted_candles[cache_key] = latest_candle_time
                 
-                # Tight percentage-based stop loss offsets for clean scalps
                 if "BTC" in symbol:
-                    sl_offset = c0 * 0.0012  # ~0.12% risk range
+                    sl_offset = c0 * 0.0012
                 elif "XAU" in symbol:
-                    sl_offset = c0 * 0.0006  # ~0.06% risk range
+                    sl_offset = c0 * 0.0006
                 else:
-                    sl_offset = c0 * 0.0003  # ~0.03% risk range
+                    sl_offset = c0 * 0.0003
 
                 est_sl = round(c0 - sl_offset, 4) if direction == "BUY" else round(c0 + sl_offset, 4)
                 risk_distance = abs(c0 - est_sl)
@@ -301,7 +311,6 @@ async def autonomous_market_scan():
                         f"• *Risk/Reward:* 1:2"
                     )
                     
-                    # Send initial alert to Telegram and capture its message ID
                     msg_id = await send_telegram_alert(alert_text)
 
                     try:
@@ -327,7 +336,7 @@ async def autonomous_market_scan():
 # ------------------------------------------------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    scheduler.add_job(autonomous_market_scan, 'interval', minutes=1) # Scans every 1 minute for near-instant alerts
+    scheduler.add_job(autonomous_market_scan, 'interval', minutes=1)
     scheduler.add_job(check_tracked_trades_outcomes, 'interval', minutes=5)
     scheduler.start()
     print("🚀 Autonomous Multi-Timeframe Market Scanner & Outcome Tracker Started")
@@ -367,8 +376,8 @@ class ChatAuditRequest(BaseModel):
     message: str
 
 class AuditResponse(BaseModel):
-    verdict: str  # APPROVED, REJECTED, or WARNING
-    confidence_score: int  # 0 to 100
+    verdict: str
+    confidence_score: int
     risk_reward_ratio: float
     summary: str
     violations: list[str]
